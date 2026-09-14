@@ -156,7 +156,7 @@
         .verdict-badge.change { background: rgba(251,113,133,0.2); color: #fb7185; border: 1px solid rgba(251,113,133,0.35); }
         .verdict-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; text-align: center; }
         @media (max-width: 1050px) { .verdict-stats { grid-template-columns: repeat(3, 1fr); gap: 12px; } }
-        .verdict-stats .value { font-size: 36px; font-weight: 800; line-height: 1; color: #f8fafc; letter-spacing: -0.5px; }
+        .verdict-stats .value { font-size: 28px; font-weight: 800; line-height: 1.15; color: #f8fafc; letter-spacing: -0.5px; white-space: nowrap; }
         .verdict-stats .label { font-size: 10px; color: rgba(255,255,255,0.78); margin-top: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
         .verdict-stats .stat-ready .value { color: #fbbf24; }
         .verdict-stats .stat-deployed .value { color: #4ade80; }
@@ -168,7 +168,7 @@
         .train-side-kpis { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         .mini-kpi { background: white; border-radius: var(--radius); padding: 20px 18px; box-shadow: var(--shadow); }
         .mini-kpi .mk-label { font-size: 11px; font-weight: 700; color: var(--pwc-gray); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-        .mini-kpi .mk-value { font-size: 32px; font-weight: 800; color: var(--pwc-dark); line-height: 1; }
+        .mini-kpi .mk-value { font-size: 26px; font-weight: 800; color: var(--pwc-dark); line-height: 1.15; white-space: nowrap; }
         .mini-kpi .mk-sub { font-size: 12px; color: var(--pwc-gray); margin-top: 8px; line-height: 1.4; }
         .mini-kpi.mk-deploy .mk-value { color: var(--pwc-green); }
         .mini-kpi.mk-waiting .mk-value { color: #d97706; }
@@ -402,7 +402,7 @@
             <div class="mini-kpi mk-deploy">
                 <div class="mk-label">Deployed %</div>
                 <div class="mk-value" id="trainKpiDeployPct">0%</div>
-                <div class="mk-sub">Of deployment-ready resources with a Billable project</div>
+                <div class="mk-sub" id="trainDeploySub">Of deployment-ready resources with a Billable project within window</div>
             </div>
             <div class="mini-kpi mk-pipeline">
                 <div class="mk-label">Shadow %</div>
@@ -412,7 +412,7 @@
             <div class="mini-kpi mk-waiting">
                 <div class="mk-label">Bench %</div>
                 <div class="mk-value" id="trainKpiBenchPct">0%</div>
-                <div class="mk-sub" id="trainBenchSub">Deployment-ready resources still on bench within 2 Months</div>
+                <div class="mk-sub" id="trainBenchSub">Deployment-ready resources with no Billable or Shadow project within 2 Months</div>
             </div>
             <div class="mini-kpi mk-resigned">
                 <div class="mk-label">Leaver Within Window</div>
@@ -458,13 +458,10 @@
                         <th>Position</th>
                         <th>Training Start Date</th>
                         <th>Training End Date</th>
-                        <th>1st Billable Start</th>
-                        <th>Bench (Months)</th>
+                        <th>1st Deployment Date</th>
                         <th id="trainStatusHeader">Status (Within 2 Months)</th>
                         <th>First Project</th>
                         <th>First Type</th>
-                        <th>Latest Project</th>
-                        <th>Latest Type</th>
                     </tr>
                 </thead>
                 <tbody id="trainPeopleBody"></tbody>
@@ -929,6 +926,12 @@ function typePill(type) {
     return `<span class="${cls}">${t}</span>`;
 }
 
+function pickEarlierDeploy(a, b) {
+    if (!a) return b || null;
+    if (!b) return a;
+    return sortDeploys(a, b) <= 0 ? a : b;
+}
+
 function enrichTrainingRow(r, thresholdDays) {
     const thr = thresholdDays != null ? thresholdDays : getThresholdDays();
     const ready = parseISODate(r.trainingReadyDate);
@@ -937,30 +940,40 @@ function enrichTrainingRow(r, thresholdDays) {
     const trainEnd = parseISODate(r.trainingEndDate);
     const firstBillable = getFirstBillableDeploy(r.workdayId);
     const firstShadow = getFirstShadowDeploy(r.workdayId);
+    const firstPlacement = pickEarlierDeploy(firstBillable, firstShadow);
     const latest = getLatestDeploy(r.workdayId);
     const proj = firstBillable ? parseISODate(firstBillable.startDate) : null;
     const shadowProj = firstShadow ? parseISODate(firstShadow.startDate) : null;
+    const placementDate = firstPlacement ? parseISODate(firstPlacement.startDate) : null;
     const isShadowed = !!shadowProj;
     const onb = parseISODate(r.onboardingDate);
     const benchStart = trainEnd || ready;
     let shadowStandbyDays = null;
     if (benchStart && shadowProj) shadowStandbyDays = daysBetween(benchStart, shadowProj);
+    let billableStandbyDays = null;
+    if (benchStart && proj) billableStandbyDays = daysBetween(benchStart, proj);
     const resigned = r.deploymentStatus === 'Resigned';
     let standbyDays = null;
     const isDeployed = !!proj;
+    const hasPlacement = !!placementDate;
     if (benchStart) {
-        if (proj) {
-            standbyDays = daysBetween(benchStart, proj);
-        } else if (!resigned) {
-            standbyDays = daysBetween(benchStart, todayDate());
-        } else {
+        if (placementDate) {
+            standbyDays = daysBetween(benchStart, placementDate);
+        } else if (resigned) {
             const anyRows = (DEPLOYS_BY_ID.get(String(r.workdayId)) || []).filter(d => d.startDate);
             const firstAny = anyRows.length ? [...anyRows].sort(sortDeploys)[0] : null;
-            const freeze = (firstAny ? parseISODate(firstAny.startDate) : null) || parseISODate(r.firstProjectStartDate);
+            const freeze = lastWorking
+                || (firstAny ? parseISODate(firstAny.startDate) : null)
+                || parseISODate(r.firstProjectStartDate);
             if (freeze) standbyDays = daysBetween(benchStart, freeze);
+        } else {
+            standbyDays = daysBetween(benchStart, todayDate());
         }
     }
-    const withinWindow = isDeployed && standbyDays !== null && standbyDays <= thr;
+    const daysToLeave = benchStart && lastWorking ? daysBetween(benchStart, lastWorking) : null;
+    const leftWithinWindow = resigned && daysToLeave !== null && daysToLeave >= 0 && daysToLeave <= thr;
+    const billableWithinWindow = isDeployed && billableStandbyDays !== null && billableStandbyDays <= thr;
+    const withinWindow = hasPlacement && standbyDays !== null && standbyDays <= thr;
     const shadowWithinWindow = isShadowed && shadowStandbyDays !== null && shadowStandbyDays <= thr;
     let certReady = false;
     if (ready) {
@@ -980,18 +993,22 @@ function enrichTrainingRow(r, thresholdDays) {
         lastWorkingDateParsed: lastWorking,
         trainingStartDateParsed: trainStart,
         trainingEndDateParsed: trainEnd,
-        projectDate: proj,
+        projectDate: placementDate,
         onboarding: onb,
         standbyDays,
+        billableStandbyDays,
         isDeployed,
+        hasPlacement,
+        billableWithinWindow,
         withinWindow,
+        leftWithinWindow,
         isShadowed,
         shadowStandbyDays,
         shadowWithinWindow,
         shadowProj,
         certReady,
-        firstClient: firstBillable ? firstBillable.client : null,
-        firstType: firstBillable ? firstBillable.type : null,
+        firstClient: firstPlacement ? firstPlacement.client : null,
+        firstType: firstPlacement ? firstPlacement.type : null,
         firstShadowClient: firstShadow ? firstShadow.client : null,
         latestClient: latest ? latest.client : null,
         latestType: latest ? latest.type : null
@@ -1031,22 +1048,20 @@ function computeAggregate(rows) {
     const total = rows.length;
     const readyRows = rows.filter(r => r.readyDate);
     const ready = rows.filter(r => r.deploymentStatus === 'OnBench').length;
-    const deployed = rows.filter(r => r.isDeployed).length;
+    const deployed = rows.filter(r => r.hasPlacement).length;
     const withinCount = readyRows.filter(r => r.withinWindow).length;
+    const billableWithinCount = readyRows.filter(r => r.billableWithinWindow).length;
     const standbyVals = readyRows.filter(r => r.withinWindow).map(r => r.standbyDays).filter(d => d !== null);
     const avgStandby = standbyVals.length ? standbyVals.reduce((a, b) => a + b, 0) / standbyVals.length : null;
-    const overWindow = readyRows.filter(r => r.standbyDays !== null && r.standbyDays > thr).length;
+    const overWindow = readyRows.filter(r => !r.leftWithinWindow && r.standbyDays !== null && r.standbyDays > thr).length;
     const trainingReady = readyRows.length;
     const pctWithin = trainingReady > 0 ? (withinCount / trainingReady) * 100 : null;
-    const deployPct = trainingReady > 0 ? (withinCount / trainingReady) * 100 : (total > 0 ? (withinCount / total) * 100 : 0);
+    const deployPct = trainingReady > 0 ? (billableWithinCount / trainingReady) * 100 : (total > 0 ? (billableWithinCount / total) * 100 : 0);
     const inPipeline = rows.filter(r => r.deploymentStatus === 'OnTraining' || r.deploymentStatus === 'Incoming').length;
     const resignedRows = rows.filter(r => r.deploymentStatus === 'Resigned');
     const resignedTotal = resignedRows.length;
     const resignedDateComplete = resignedRows.filter(r => r.lastWorkingDateParsed);
-    const resignedWithinWindow = resignedDateComplete.filter(r => {
-        const days = daysBetween(r.onboarding, r.lastWorkingDateParsed);
-        return days !== null && days >= 0 && days <= thr;
-    }).length;
+    const resignedWithinWindow = readyRows.filter(r => r.leftWithinWindow && !r.withinWindow).length;
     const trainDur = rows.map(r => r.trainDays).filter(d => d !== null);
     const avgTrain = trainDur.length ? trainDur.reduce((a, b) => a + b, 0) / trainDur.length : null;
     const certReadyCount = readyRows.filter(r => r.certReady).length;
@@ -1055,7 +1070,7 @@ function computeAggregate(rows) {
     const shadowPct = trainingReady > 0 ? (shadowWithinCount / trainingReady) * 100 : 0;
     const shadowStandbyVals = readyRows.filter(r => r.shadowWithinWindow).map(r => r.shadowStandbyDays).filter(d => d !== null);
     const avgShadowStandby = shadowStandbyVals.length ? shadowStandbyVals.reduce((a, b) => a + b, 0) / shadowStandbyVals.length : null;
-    const benchCount = readyRows.filter(r => !r.withinWindow && !r.shadowWithinWindow && r.deploymentStatus !== 'Resigned').length;
+    const benchCount = readyRows.filter(r => !r.withinWindow && !r.leftWithinWindow).length;
     const benchPct = trainingReady > 0 ? (benchCount / trainingReady) * 100 : 0;
     const statusMix = {};
     rows.forEach(r => {
@@ -1063,7 +1078,7 @@ function computeAggregate(rows) {
         statusMix[s] = (statusMix[s] || 0) + 1;
     });
     return {
-        total, ready, trainingReady, deployed, withinCount, avgStandby, overWindow,
+        total, ready, trainingReady, deployed, withinCount, billableWithinCount, avgStandby, overWindow,
         pctWithin, deployPct, inPipeline, resignedTotal, resignedDateComplete: resignedDateComplete.length,
         resignedWithinWindow, avgTrain,
         certReadyCount, certReadyPct, shadowWithinCount, shadowPct, avgShadowStandby,
@@ -1101,6 +1116,10 @@ function buildBatchStats(rows) {
 function fmtPct(n) {
     if (n === null || n === undefined || isNaN(n)) return '—';
     return Math.round(n) + '%';
+}
+
+function fmtCountPct(count, pct) {
+    return `${count} (${fmtPct(pct)})`;
 }
 
 function fmtNum(n, digits) {
@@ -1156,9 +1175,11 @@ function updateWindowLabels() {
     if (note) note.innerHTML = `On-time window: <strong>${monthWord}</strong> from Training End to first Billable or Shadow project`;
     const shadowSub = document.getElementById('trainShadowSub');
     if (shadowSub) shadowSub.textContent = `Of deployment-ready resources deployed to Shadowing within ${monthWord}`;
+    const deploySub = document.getElementById('trainDeploySub');
+    if (deploySub) deploySub.textContent = `Of deployment-ready resources with a Billable project within ${monthWord}`;
     set('trainStatusHeader', `Status (Within ${monthWord})`);
     const benchSub = document.getElementById('trainBenchSub');
-    if (benchSub) benchSub.textContent = `Deployment-ready resources still on bench within ${monthWord}`;
+    if (benchSub) benchSub.textContent = `Deployment-ready resources with no Billable or Shadow project within ${monthWord}`;
 }
 
 function populateTrainFilters() {
@@ -1199,22 +1220,21 @@ function renderTrainKPIs(agg, selectedBatch) {
     deployedEl.textContent = agg.withinCount;
     deployedEl.className = 'value ' + (agg.withinCount === 0 ? 'kpi-low' : 'kpi-ok');
     const withinEl = document.getElementById('trainKpiWithin60');
-    withinEl.textContent = fmtPct(agg.pctWithin);
+    withinEl.textContent = fmtCountPct(agg.withinCount, agg.pctWithin);
     withinEl.className = 'value ' + (agg.pctWithin !== null && agg.pctWithin < 50 ? 'kpi-low' : 'kpi-ok');
     document.getElementById('trainKpiAvgStandby').textContent = fmtMonths(agg.avgStandby);
     document.getElementById('trainKpiOver60').textContent = agg.overWindow;
-    document.getElementById('trainKpiDeployPct').textContent = fmtPct(agg.deployPct);
-    document.getElementById('trainKpiShadowPct').textContent = fmtPct(agg.shadowPct);
-    document.getElementById('trainKpiBenchPct').textContent = fmtPct(agg.benchPct);
+    document.getElementById('trainKpiDeployPct').textContent = fmtCountPct(agg.billableWithinCount, agg.deployPct);
+    document.getElementById('trainKpiShadowPct').textContent = fmtCountPct(agg.shadowWithinCount, agg.shadowPct);
+    document.getElementById('trainKpiBenchPct').textContent = fmtCountPct(agg.benchCount, agg.benchPct);
     const resignedEl = document.getElementById('trainKpiResigned');
     if (resignedEl) {
-        resignedEl.textContent = agg.resignedDateComplete > 0 ? agg.resignedWithinWindow : '—';
+        resignedEl.textContent = agg.resignedWithinWindow;
+        resignedEl.className = 'mk-value';
     }
     const resignedSub = document.getElementById('trainResignedSub');
     if (resignedSub) {
-        resignedSub.textContent = agg.resignedDateComplete > 0
-            ? `${agg.resignedWithinWindow} of ${agg.resignedDateComplete} leavers within ${monthWord}`
-            : `0 of ${agg.resignedTotal} leavers have Last Working Date`;
+        resignedSub.textContent = `${agg.resignedWithinWindow} of ${agg.resignedTotal} leavers left within ${monthWord} with no in-window placement`;
     }
     document.getElementById('trainVerdictSub').textContent =
         `Tracks how quickly resources reach their first Billable project after training ends, within a ${monthWord} window.`;
@@ -1231,9 +1251,9 @@ function renderStandbyHist(rows) {
     const billableCounts = buckets.map(() => 0);
     const shadowCounts = buckets.map(() => 0);
     rows.filter(r => r.readyDate).forEach(r => {
-        if (r.isDeployed && r.standbyDays !== null) {
+        if (r.isDeployed && r.billableStandbyDays !== null) {
             for (let i = 0; i < buckets.length; i++) {
-                if (r.standbyDays <= buckets[i].maxDays) { billableCounts[i]++; break; }
+                if (r.billableStandbyDays <= buckets[i].maxDays) { billableCounts[i]++; break; }
             }
         }
         if (r.isShadowed && r.shadowStandbyDays !== null) {
@@ -1280,7 +1300,7 @@ function renderStandbyBar(batchStats, selectedBatch, filteredRows) {
         filteredRows.filter(r => r.readyDate).forEach(r => {
             const c = r.capability || 'Unknown';
             if (!byCap[c]) byCap[c] = { billable: [], shadow: [] };
-            if (r.withinWindow && r.standbyDays !== null) byCap[c].billable.push(r.standbyDays);
+            if (r.billableWithinWindow && r.billableStandbyDays !== null) byCap[c].billable.push(r.billableStandbyDays);
             if (r.shadowWithinWindow && r.shadowStandbyDays !== null) byCap[c].shadow.push(r.shadowStandbyDays);
         });
         labels = Object.keys(byCap).sort();
@@ -1445,15 +1465,12 @@ function renderBatchTable(batchStats, selectedBatch) {
 }
 
 function renderTrainPeople(rows) {
-    const thr = getThresholdDays();
     const sorted = [...rows].sort((a, b) => {
         if (a.batchName !== b.batchName) return (a.batchName || '').localeCompare(b.batchName || '');
         return (a.name || '').localeCompare(b.name || '');
     });
     document.getElementById('trainPeopleCount').textContent = sorted.length + ' records';
     document.getElementById('trainPeopleBody').innerHTML = sorted.map(r => {
-        const standbyCls = r.standbyDays === null ? '' : (r.standbyDays <= thr ? 'standby-ok' : 'standby-long');
-        const standbyTxt = r.standbyDays === null ? '—' : fmtMonths(r.standbyDays) + (r.isDeployed ? '' : '*');
         return `<tr>
             <td><strong>${r.name || '—'}</strong></td>
             <td>${r.batchName || '—'}</td>
@@ -1462,12 +1479,9 @@ function renderTrainPeople(rows) {
             <td>${fmtDate(r.readyDate)}</td>
             <td>${fmtDate(r.trainingEndDateParsed)}</td>
             <td>${fmtDate(r.projectDate)}</td>
-            <td class="${standbyCls}">${standbyTxt}</td>
-            <td><span class="${r.deploymentStatus === 'Resigned' ? 'status-resigned' : r.withinWindow ? 'status-deploy' : r.isDeployed ? 'status-bench' : 'status-other'}">${r.deploymentStatus === 'Resigned' ? 'Leaver' : r.withinWindow ? 'Within Window' : r.isDeployed ? 'Over Window' : 'On Bench'}</span></td>
+            <td><span class="${r.withinWindow ? 'status-deploy' : (r.leftWithinWindow ? 'status-resigned' : r.hasPlacement ? 'status-bench' : 'status-other')}">${r.withinWindow ? 'Within Window' : (r.leftWithinWindow ? 'Leaver' : r.hasPlacement ? 'Over Window' : 'On Bench')}</span></td>
             <td>${r.firstClient || '—'}</td>
             <td>${typePill(r.firstType)}</td>
-            <td>${r.latestClient || '—'}</td>
-            <td>${typePill(r.latestType)}</td>
         </tr>`;
     }).join('');
 }
